@@ -1,6 +1,7 @@
 import argparse
 import base64
 import json
+import os
 import sys
 import time
 from io import BytesIO
@@ -21,6 +22,8 @@ OUTPUT_DIR = ROOT / "web_output"
 STATIC_DIR = ROOT / "web_static"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 
+HF_MODE = os.environ.get("HF_MODE", "0") == "1"
+
 CATEGORY_TAGS = {
     "block": "minecraft block texture",
     "item": "minecraft item texture, flat sprite",
@@ -28,6 +31,7 @@ CATEGORY_TAGS = {
 QUALITY_TAGS = (
     "16x16 pixel art, high quality, clean pixels, minecraft style, crisp edges"
 )
+
 
 class ResBlock(nn.Module):
     def __init__(self, ch):
@@ -43,6 +47,7 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         return self.act(x + self.net(x))
+
 
 class Encoder(nn.Module):
     def __init__(self, in_ch=4, embed_dim=64):
@@ -315,6 +320,21 @@ class FrozenCLIPEncoder(nn.Module):
 
 
 def load_all_models(device):
+    if HF_MODE and (not VQVAE_CKPT.exists() or not TRANSFORMER_CKPT.exists()):
+        from huggingface_hub import hf_hub_download
+
+        repo = os.environ.get("HF_MODEL_REPO", "zero-delimiter/TFBOYS")
+        print(f"Downloading model weights from {repo}...")
+        VQVAE_CKPT.parent.mkdir(exist_ok=True)
+        hf_hub_download(
+            repo_id=repo, filename="vqvae_best.pt", local_dir=str(VQVAE_CKPT.parent)
+        )
+        hf_hub_download(
+            repo_id=repo,
+            filename="transformer_best.pt",
+            local_dir=str(VQVAE_CKPT.parent),
+        )
+
     print(f"Loading VQ-VAE from {VQVAE_CKPT}...")
     vd = torch.load(VQVAE_CKPT, map_location=device, weights_only=False)
     cfg = vd["config"]
@@ -410,15 +430,22 @@ def cli_generate(args):
 def run_webui(port, host):
     from flask import Flask, jsonify, request, send_from_directory
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
     app = Flask(__name__, static_folder=str(STATIC_DIR))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vqvae, transformer, clip = load_all_models(device)
 
-    @app.route("/")
-    def index():
-        return send_from_directory(str(STATIC_DIR), "index.html")
+    if not HF_MODE:
+        OUTPUT_DIR.mkdir(exist_ok=True)
+
+    @app.route("/api/env")
+    def api_env():
+        return jsonify(
+            {
+                "hf_mode": HF_MODE,
+                "device": str(device),
+            }
+        )
 
     @app.route("/api/status")
     def api_status():
@@ -426,7 +453,7 @@ def run_webui(port, host):
             {
                 "device": str(device),
                 "model_loaded": True,
-                "output_dir": str(OUTPUT_DIR.resolve()),
+                "output_dir": str(OUTPUT_DIR.resolve()) if not HF_MODE else None,
             }
         )
 
@@ -473,6 +500,14 @@ def run_webui(port, host):
 
     @app.route("/api/save", methods=["POST"])
     def api_save():
+        if HF_MODE:
+            return (
+                jsonify(
+                    {"error": "Save is disabled in HF mode. Use /api/download instead."}
+                ),
+                405,
+            )
+
         data = request.json or {}
         b64 = data.get("b64", "")
         prompt = data.get("prompt", "texture")
@@ -489,8 +524,27 @@ def run_webui(port, host):
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/download", methods=["POST"])
+    def api_download():
+        data = request.json or {}
+        b64 = data.get("b64", "")
+        prompt = data.get("prompt", "texture")
+        if not b64:
+            return jsonify({"error": "no image data"}), 400
+        try:
+            safe = prompt[:40].replace(" ", "_").replace(",", "").replace("/", "_")
+            ts = int(time.time())
+            fname = f"{safe}_{ts}.png"
+            return jsonify({"download": True, "b64": b64, "filename": fname})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/")
+    def index():
+        return send_from_directory(str(STATIC_DIR), "index.html")
+
     url = f"http://{host if host != '0.0.0.0' else 'localhost'}:{port}"
-    print(f"WebUI ready → {url}")
+    print(f"{'[HF Mode] ' if HF_MODE else ''}WebUI ready → {url}")
     app.run(host=host, port=port, debug=False)
 
 

@@ -369,12 +369,20 @@ function App() {
   const [lastCategory, setLastCategory] = useState('item');
   const [logMsg, setLogMsg] = useState({ text: 'Ready', cls: '' });
   const [modelReady, setModelReady] = useState(false);
+  const [hfMode, setHfMode] = useState(false);
   const [hint, setHint] = useState('Generate a texture to preview');
   const threeContainer = useRef(null);
   const setTexture = useThreeRenderer(threeContainer);
 
   // Persist settings
   useEffect(() => { saveToLS({ prompt, category, batch, temperature }); }, [prompt, category, batch, temperature]);
+
+  // Detect environment
+  useEffect(() => {
+    fetch('/api/env').then(r => r.json()).then(d => {
+      setHfMode(!!d.hf_mode);
+    }).catch(() => {});
+  }, []);
 
   // Status polling
   useEffect(() => {
@@ -445,14 +453,35 @@ function App() {
 
   function doSave() {
     if (selected < 0) return;
-    fetch('/api/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ b64: images[selected].b64, prompt, category: lastCategory }),
-    })
-    .then(r => r.json())
-    .then(res => setLogMsg({ text: `Saved -> ${res.saved}`, cls: 'ok' }))
-    .catch(() => setLogMsg({ text: 'Save failed', cls: 'err' }));
+    const body = { b64: images[selected].b64, prompt, category: lastCategory };
+
+    if (hfMode) {
+      // HF mode: call /api/download, trigger browser download
+      fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      .then(r => r.json())
+      .then(res => {
+        const a = document.createElement('a');
+        a.href = 'data:image/png;base64,' + res.b64;
+        a.download = res.filename;
+        a.click();
+        setLogMsg({ text: `Downloaded -> ${res.filename}`, cls: 'ok' });
+      })
+      .catch(() => setLogMsg({ text: 'Download failed', cls: 'err' }));
+    } else {
+      // Local mode: save to server disk
+      fetch('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      .then(r => r.json())
+      .then(res => setLogMsg({ text: `Saved -> ${res.saved}`, cls: 'ok' }))
+      .catch(() => setLogMsg({ text: 'Save failed', cls: 'err' }));
+    }
   }
 
   return (
@@ -462,8 +491,12 @@ function App() {
         <span className="text-sm font-semibold tracking-wide">Texture Forge - the Binary Output YOLO System™</span>
         <div className="flex items-center gap-2">
           <Button variant="secondary" onClick={doSave} disabled={selected < 0} className="h-8 text-xs px-3">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-            Save to output
+            {hfMode ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            )}
+            {hfMode ? 'Download' : 'Save to output'}
           </Button>
           <Badge variant={status.variant}>{status.text}</Badge>
         </div>
