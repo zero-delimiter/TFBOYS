@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TFBOYS™</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<!-- Preload Three.js + OrbitControls as ES modules, expose to global scope -->
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+window.THREE = THREE;
+window.OrbitControls = OrbitControls;
+window.dispatchEvent(new Event('three-ready'));
+</script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        border: 'hsl(240 3.7% 15.9%)',
+        input: 'hsl(240 3.7% 15.9%)',
+        ring: 'hsl(240 4.9% 83.9%)',
+        background: 'hsl(240 10% 3.9%)',
+        foreground: 'hsl(0 0% 98%)',
+        primary: { DEFAULT: 'hsl(0 0% 98%)', foreground: 'hsl(240 5.9% 10%)' },
+        secondary: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(0 0% 98%)' },
+        muted: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(240 5% 64.9%)' },
+        accent: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(0 0% 98%)' },
+        destructive: { DEFAULT: 'hsl(0 62.8% 30.6%)', foreground: 'hsl(0 0% 98%)' },
+        card: { DEFAULT: 'hsl(240 10% 3.9%)', foreground: 'hsl(0 0% 98%)' },
+      },
+      borderRadius: { lg: '0.5rem', md: 'calc(0.5rem - 2px)', sm: 'calc(0.5rem - 4px)' },
+    }
+  }
+}
+</script>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { background: hsl(240 10% 3.9%); color: hsl(0 0% 98%); }
+  input[type=range] { accent-color: hsl(0 0% 98%); }
+  input[type=range]::-webkit-slider-runnable-track { background: hsl(240 3.7% 15.9%); height: 6px; border-radius: 3px; }
+  .pixel-img { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-type="module">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── LocalStorage ─────────────────────────────────────────────────────────────
+const LS_KEY = 'texture-forge-settings';
+const loadSettings = () => { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; } };
+const saveToLS = (s) => localStorage.setItem(LS_KEY, JSON.stringify(s));
+
+// ── shadcn-style components ──────────────────────────────────────────────────
+function Button({ children, variant = 'default', className = '', disabled, ...props }) {
+  const base = 'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50';
+  const variants = {
+    default: 'bg-primary text-primary-foreground shadow hover:bg-primary/90',
+    secondary: 'bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80',
+    outline: 'border border-border bg-transparent shadow-sm hover:bg-accent hover:text-accent-foreground',
+    ghost: 'hover:bg-accent hover:text-accent-foreground',
+  };
+  return <button className={`${base} ${variants[variant]} px-4 py-2 ${className}`} disabled={disabled} {...props}>{children}</button>;
+}
+
+function Input({ className = '', ...props }) {
+  return <input className={`flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${className}`} {...props} />;
+}
+
+function Select({ value, onChange, children, className = '' }) {
+  return (
+    <select value={value} onChange={onChange}
+      className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${className}`}>
+      {children}
+    </select>
+  );
+}
+
+function Label({ children, className = '' }) {
+  return <label className={`text-sm font-medium leading-none text-muted-foreground ${className}`}>{children}</label>;
+}
+
+function Badge({ children, variant = 'secondary', className = '' }) {
+  const v = {
+    secondary: 'bg-secondary text-secondary-foreground',
+    success: 'bg-emerald-900/50 text-emerald-400 border-emerald-800',
+    destructive: 'bg-destructive/20 text-red-400 border-red-900',
+  };
+  return <span className={`inline-flex items-center rounded-md border border-border px-2.5 py-0.5 text-xs font-medium ${v[variant]} ${className}`}>{children}</span>;
+}
+
+function Separator() {
+  return <div className="h-px w-full bg-border" />;
+}
+
+// ── Voxel mesh builder ───────────────────────────────────────────────────────
+// Builds a merged BufferGeometry with per-face vertex colors.
+// Only generates faces that are exposed (not adjacent to another opaque voxel).
+function buildVoxelGeometry(T, data, w, h, d) {
+  // data[z][y][x] = {r,g,b} or null
+  const positions = [];
+  const normals   = [];
+  const colors    = [];
+
+  function solid(x, y, z) {
+    if (x < 0 || x >= w || y < 0 || y >= h || z < 0 || z >= d) return false;
+    return data[z][y][x] !== null;
+  }
+
+  // 6 face directions: [dx,dy,dz, ...4 corner offsets, nx,ny,nz]
+  const faces = [
+    { dir: [ 0, 0, 1], corners: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], n: [0,0,1]  },  // front  (+Z)
+    { dir: [ 0, 0,-1], corners: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], n: [0,0,-1] },  // back   (-Z)
+    { dir: [ 0, 1, 0], corners: [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], n: [0,1,0]  },  // top    (+Y)
+    { dir: [ 0,-1, 0], corners: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], n: [0,-1,0] },  // bottom (-Y)
+    { dir: [ 1, 0, 0], corners: [[1,0,1],[1,0,0],[1,1,0],[1,1,1]], n: [1,0,0]  },  // right  (+X)
+    { dir: [-1, 0, 0], corners: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]], n: [-1,0,0] },  // left   (-X)
+  ];
+
+  for (let z = 0; z < d; z++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const voxel = data[z][y][x];
+        if (!voxel) continue;
+
+        for (const face of faces) {
+          const nx = x + face.dir[0], ny = y + face.dir[1], nz = z + face.dir[2];
+          if (solid(nx, ny, nz)) continue; // hidden face, skip
+
+          // Two triangles for the quad
+          const idx = [0, 1, 2, 0, 2, 3];
+          for (const i of idx) {
+            const c = face.corners[i];
+            positions.push(x + c[0], y + c[1], z + c[2]);
+            normals.push(face.n[0], face.n[1], face.n[2]);
+            colors.push(voxel.r, voxel.g, voxel.b);
+          }
+        }
+      }
+    }
+  }
+
+  const geo = new T.BufferGeometry();
+  geo.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new T.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('color',    new T.Float32BufferAttribute(colors, 3));
+  return geo;
+}
+
+// Read pixel data and create 3D voxel grid
+function pixelsToVoxelData(pixels, category) {
+  const w = pixels.width, h = pixels.height, pd = pixels.data;
+  // Item: 1 layer deep. Block: full cube, same texture on all 6 faces.
+  const depth = category === 'block' ? w : 1;
+  // data[z][y][x]
+  const data = [];
+  for (let z = 0; z < depth; z++) data[z] = [];
+
+  // Helper: read pixel color at image (px, py), return linear RGB or null
+  function readPixel(px, py) {
+    if (px < 0 || px >= w || py < 0 || py >= h) return null;
+    const si = (py * w + px) * 4;
+    if (pd[si + 3] < 8) return null;
+    return {
+      r: Math.pow(pd[si]   / 255, 2.2),
+      g: Math.pow(pd[si+1] / 255, 2.2),
+      b: Math.pow(pd[si+2] / 255, 2.2),
+    };
+  }
+
+  for (let vy = 0; vy < h; vy++) {
+    // Flip Y: image row 0 = top, but voxel y=0 = bottom
+    const imgY = h - 1 - vy;
+
+    if (category === 'block') {
+      for (let z = 0; z < depth; z++) data[z][vy] = [];
+      for (let x = 0; x < w; x++) {
+        for (let z = 0; z < depth; z++) {
+          const isXEdge = (x === 0 || x === w - 1);
+          const isYEdge = (vy === 0 || vy === h - 1);
+          const isZEdge = (z === 0 || z === depth - 1);
+          if (isXEdge || isYEdge || isZEdge) {
+            // Map each surface face to texture coordinates
+            let tx, ty;
+            if (isZEdge)      { tx = x; ty = imgY; }
+            else if (isYEdge) { tx = x; ty = z; }
+            else              { tx = z; ty = imgY; }
+            const c = readPixel(tx, ty);
+            data[z][vy][x] = c || { r: 0.15, g: 0.15, b: 0.15 };
+          } else {
+            data[z][vy][x] = { r: 0.15, g: 0.15, b: 0.15 };
+          }
+        }
+      }
+    } else {
+      // Item: single layer
+      data[0][vy] = [];
+      for (let x = 0; x < w; x++) {
+        data[0][vy][x] = readPixel(x, imgY);
+      }
+    }
+  }
+
+  return { data, w, h, depth };
+}
+
+// ── Three.js Voxel Renderer ──────────────────────────────────────────────────
+function useThreeRenderer(containerRef) {
+  const internals = useRef({ scene: null, camera: null, renderer: null, controls: null, mesh: null, animId: null });
+  const [ready, setReady] = useState(!!window.THREE);
+
+  useEffect(() => {
+    if (window.THREE) { setReady(true); return; }
+    const handler = () => setReady(true);
+    window.addEventListener('three-ready', handler);
+    return () => window.removeEventListener('three-ready', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const T = window.THREE;
+    const r = internals.current;
+
+    r.scene = new T.Scene();
+    r.scene.background = new T.Color(0x0a0a12);
+
+    r.camera = new T.PerspectiveCamera(45, 1, 0.1, 100);
+    r.camera.position.set(2.5, 2.0, 2.5);
+
+    // Create canvas manually, pin it via CSS so it never affects container layout
+    const cvs = document.createElement('canvas');
+    cvs.style.display = 'block';
+    cvs.style.width = '100%';
+    cvs.style.height = '100%';
+    container.style.position = 'relative';
+    container.appendChild(cvs);
+
+    r.renderer = new T.WebGLRenderer({ canvas: cvs, antialias: true });
+    r.renderer.outputColorSpace = T.SRGBColorSpace;
+    // Don't call setPixelRatio — we handle DPR manually to avoid resize loops
+
+    r.controls = new window.OrbitControls(r.camera, cvs);
+    r.controls.enableDamping = true;
+    r.controls.dampingFactor = 0.08;
+    r.controls.minDistance = 0.5;
+    r.controls.maxDistance = 10;
+    r.controls.target.set(0, 0, 0);
+
+    r.scene.add(new T.AmbientLight(0xffffff, 2.0));
+    const d1 = new T.DirectionalLight(0xffffff, 1.0);
+    d1.position.set(5, 8, 5);
+    r.scene.add(d1);
+    const d2 = new T.DirectionalLight(0xffffff, 0.4);
+    d2.position.set(-5, -3, -5);
+    r.scene.add(d2);
+
+    const grid = new T.GridHelper(6, 12, 0x1a1a2a, 0x1a1a2a);
+    grid.position.y = -1;
+    r.scene.add(grid);
+
+    function animate() {
+      r.animId = requestAnimationFrame(animate);
+      // Resize only when the CSS display size differs from the buffer size
+      const dpr = window.devicePixelRatio || 1;
+      const bw = Math.floor(cvs.clientWidth * dpr);
+      const bh = Math.floor(cvs.clientHeight * dpr);
+      if (cvs.width !== bw || cvs.height !== bh) {
+        r.renderer.setSize(bw, bh, false); // false = don't touch CSS
+        r.camera.aspect = cvs.clientWidth / cvs.clientHeight;
+        r.camera.updateProjectionMatrix();
+      }
+      r.controls.update();
+      r.renderer.render(r.scene, r.camera);
+    }
+
+    animate();
+
+    return () => {
+      cancelAnimationFrame(r.animId);
+      r.renderer.dispose();
+      if (cvs.parentNode) cvs.remove();
+    };
+  }, [ready]);
+
+  const setTexture = useCallback((b64, category) => {
+    const T = window.THREE;
+    const r = internals.current;
+    if (!r.scene || !T) return;
+
+    // Cleanup old mesh
+    if (r.mesh) {
+      r.scene.remove(r.mesh);
+      r.mesh.traverse(c => {
+        if (c.geometry) c.geometry.dispose();
+        if (c.material) c.material.dispose();
+      });
+      r.mesh = null;
+    }
+
+    // Decode image pixels
+    const img = new Image();
+    img.onload = () => {
+      const cvs = document.createElement('canvas');
+      cvs.width = img.width; cvs.height = img.height;
+      const ctx = cvs.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const pixels = ctx.getImageData(0, 0, img.width, img.height);
+
+      // Build voxel data and geometry
+      const vd = pixelsToVoxelData(pixels, category);
+      const geo = buildVoxelGeometry(T, vd.data, vd.w, vd.h, vd.depth);
+
+      const mat = new T.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.75, metalness: 0.0,
+      });
+
+      // Center geometry at origin, then scale to fit ~1.2 units
+      geo.center();
+      geo.computeBoundingBox();
+      const box = geo.boundingBox;
+      const maxSpan = Math.max(
+        box.max.x - box.min.x,
+        box.max.y - box.min.y,
+        box.max.z - box.min.z
+      );
+      const scale = 1.2 / maxSpan;
+
+      r.mesh = new T.Mesh(geo, mat);
+      r.mesh.scale.set(scale, scale, scale);
+      r.mesh.position.set(0, 0, 0);
+
+      r.scene.add(r.mesh);
+      r.controls.target.set(0, 0, 0);
+      r.camera.lookAt(0, 0, 0);
+    };
+    img.src = 'data:image/png;base64,' + b64;
+  }, []);
+
+  return setTexture;
+}
+
+// ── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const saved = loadSettings();
+  const [prompt, setPrompt] = useState(saved.prompt || 'diamond sword');
+  const [category, setCategory] = useState(saved.category || 'item');
+  const [batch, setBatch] = useState(saved.batch || 4);
+  const [temperature, setTemperature] = useState(saved.temperature || 0.5);
+  const [status, setStatus] = useState({ text: 'connecting...', variant: 'secondary' });
+  const [generating, setGenerating] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [images, setImages] = useState([]);
+  const [selected, setSelected] = useState(-1);
+  const [lastCategory, setLastCategory] = useState('item');
+  const [logMsg, setLogMsg] = useState({ text: 'Ready', cls: '' });
+  const [modelReady, setModelReady] = useState(false);
+  const [hint, setHint] = useState('Generate a texture to preview');
+  const threeContainer = useRef(null);
+  const setTexture = useThreeRenderer(threeContainer);
+
+  // Persist settings
+  useEffect(() => { saveToLS({ prompt, category, batch, temperature }); }, [prompt, category, batch, temperature]);
+
+  // Status polling
+  useEffect(() => {
+    let timer;
+    function poll() {
+      fetch('/api/status').then(r => r.json()).then(d => {
+        if (d.model_loaded) {
+          setStatus({ text: `${d.device.toUpperCase()} Ready`, variant: 'success' });
+          setModelReady(true);
+        } else {
+          setStatus({ text: 'Loading model...', variant: 'secondary' });
+          timer = setTimeout(poll, 2000);
+        }
+      }).catch(() => {
+        setStatus({ text: 'Offline', variant: 'destructive' });
+        timer = setTimeout(poll, 3000);
+      });
+    }
+    poll();
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Prompt preview
+  const catTags = { block: 'minecraft block texture', item: 'minecraft item texture, flat sprite' };
+  const qualityStr = '16x16 pixel art, high quality, clean pixels, minecraft style, crisp edges';
+  const fullPrompt = `${prompt.trim() || '...'}, ${catTags[category] || 'minecraft texture'}, ${qualityStr}`;
+  const promptParts = fullPrompt.split(', ');
+
+  function doGenerate() {
+    if (generating || !prompt.trim()) return;
+    setGenerating(true);
+    setProgress(10);
+    setLogMsg({ text: 'Generating...', cls: '' });
+    setImages([]);
+    setSelected(-1);
+
+    fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, category, n: batch, temperature, top_k: 64 }),
+    })
+    .then(r => { if (!r.ok) throw r; return r.json(); })
+    .then(res => {
+      setImages(res.images);
+      setLastCategory(res.category);
+      setProgress(100);
+      setLogMsg({ text: `Generated ${res.images.length} variant(s)`, cls: 'ok' });
+      // Auto-select first
+      if (res.images.length > 0) {
+        setSelected(0);
+        setTexture(res.images[0].b64, res.category);
+        setHint(`Variant 1 of ${res.images.length}  ·  ${res.category}`);
+      }
+    })
+    .catch(async err => {
+      const msg = err.json ? (await err.json().catch(() => ({}))).error || 'unknown' : 'unknown';
+      setLogMsg({ text: 'Error: ' + msg, cls: 'err' });
+      setProgress(0);
+    })
+    .finally(() => setGenerating(false));
+  }
+
+  function selectVariant(i) {
+    setSelected(i);
+    setTexture(images[i].b64, lastCategory);
+    setHint(`Variant ${i + 1} of ${images.length}  ·  ${lastCategory}`);
+  }
+
+  function doSave() {
+    if (selected < 0) return;
+    fetch('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ b64: images[selected].b64, prompt, category: lastCategory }),
+    })
+    .then(r => r.json())
+    .then(res => setLogMsg({ text: `Saved -> ${res.saved}`, cls: 'ok' }))
+    .catch(() => setLogMsg({ text: 'Save failed', cls: 'err' }));
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <header className="flex items-center justify-between h-12 px-4 border-b border-border shrink-0">
+        <span className="text-sm font-semibold tracking-wide">Texture Forge - the Binary Output YOLO System™</span>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={doSave} disabled={selected < 0} className="h-8 text-xs px-3">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save to output
+          </Button>
+          <Badge variant={status.variant}>{status.text}</Badge>
+        </div>
+      </header>
+
+      {/* Main */}
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row overflow-hidden">
+        {/* Left Panel */}
+        <div className="w-full md:w-80 shrink-0 border-r border-border p-4 flex flex-col gap-3 overflow-y-auto">
+          <div className="space-y-1.5">
+            <Label>Prompt</Label>
+            <Input value={prompt} onChange={e => setPrompt(e.target.value)}
+              placeholder="e.g. Void Crystal Ore"
+              onKeyDown={e => e.key === 'Enter' && doGenerate()} />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Category</Label>
+            <Select value={category} onChange={e => setCategory(e.target.value)}>
+              <option value="item">Item</option>
+              <option value="block">Block</option>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Batch Size: {batch}</Label>
+            <input type="range" min="1" max="64" value={batch}
+              onChange={e => setBatch(Number(e.target.value))}
+              className="w-full cursor-pointer" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Temperature: {temperature.toFixed(2)}</Label>
+            <input type="range" min="0.5" max="1.5" step="0.05" value={temperature}
+              onChange={e => setTemperature(Number(e.target.value))}
+              className="w-full cursor-pointer" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Full Prompt</Label>
+            <div className="text-xs p-2 rounded-md bg-secondary text-muted-foreground leading-relaxed break-words">
+              {promptParts.map((p, i) =>
+                i < 1
+                  ? <strong key={i} className="text-foreground">{p}</strong>
+                  : <span key={i}><span className="text-muted-foreground">, </span><span className="text-purple-400">{p}</span></span>
+              )}
+            </div>
+          </div>
+
+          <Separator />
+
+          <Button onClick={doGenerate} disabled={generating || !modelReady} className="w-full">
+            {generating ? 'Generating...' : 'Generate'}
+          </Button>
+          <div className="h-1 w-full bg-secondary rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300"
+              style={{ width: `${progress}%` }} />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-1.5">
+            <Label>Variants</Label>
+            <div className="flex flex-wrap gap-1.5 min-h-[36px] items-center">
+              {images.length === 0
+                ? <span className="text-xs text-muted-foreground">{generating ? 'Generating...' : 'No results yet'}</span>
+                : images.map((img, i) => (
+                    <img key={i} src={'data:image/png;base64,' + img.preview}
+                      title={`Variant ${i + 1}`}
+                      className={`pixel-img w-16 h-16 rounded-md border-2 cursor-pointer object-contain p-0.5 transition-all hover:scale-105 ${
+                        i === selected ? 'border-white' : 'border-border hover:border-muted-foreground'
+                      }`}
+                      onClick={() => selectVariant(i)} />
+                  ))
+              }
+            </div>
+          </div>
+
+        </div>
+
+        {/* Right Panel: 3D Preview */}
+        <div className="flex-1 flex flex-col p-4 gap-2 min-h-0 min-w-0 overflow-hidden">
+          <Label>3D Voxel Preview &mdash; drag to rotate &middot; scroll to zoom</Label>
+          <div ref={threeContainer}
+            className="flex-1 min-h-[200px] rounded-lg bg-[#0a0a12] overflow-hidden cursor-grab active:cursor-grabbing" />
+          <p className="text-xs text-center text-muted-foreground">{hint}</p>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="flex items-center justify-between h-7 px-4 border-t border-border text-xs text-muted-foreground shrink-0">
+        <span className={logMsg.cls === 'ok' ? 'text-emerald-400' : logMsg.cls === 'err' ? 'text-red-400' : ''}>{logMsg.text}</span>
+        <span>TF-BOYS</span>
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
