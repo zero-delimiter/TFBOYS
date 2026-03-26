@@ -1,6 +1,6 @@
 # TF-BOYS
 
-| **Texture Forge - the Texture Forge - the Binary Output YOLO System**
+| **Texture Forge - the Binary Output YOLO System**
 
 文生Minecraft Mod 16x16贴图AI，基于[Transformer](https://github.com/huggingface/transformers)与[openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32)。
 
