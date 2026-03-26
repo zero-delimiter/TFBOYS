@@ -38,6 +38,13 @@
 
 ## 安装
 
+**警告：下载代码时候务必使用clone而不是下载ZIP，由于文件过大下载ZIP可能会被GitHub截断**
+
+```bash
+git clone https://github.com/zero-delimiter/TFBOYS.git
+```
+
+
 ### 1. 安装Python 3.10+
 
 ### 2. 根据图形设备安装pytorch
