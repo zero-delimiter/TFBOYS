@@ -4,6 +4,9 @@
 
 文生Minecraft Mod 16x16贴图AI，基于[Transformer](https://github.com/huggingface/transformers)与[openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32)。
 
+> [!WARNING]
+> 由于没有对训练参数的mods进行大规模筛选，mod贴图质量参差不齐，现版本模型生成出来的质量可能并不理想，筛选过的Curated版本模型正在开发中，敬请期待！
+
 <table>
   <tr>
     <td align="center">
