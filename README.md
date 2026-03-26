@@ -32,7 +32,6 @@
       <img src="docs/6.png" width="300"/><br/>
       <sub><b>Moonlight Sword (保守)</b></sub>
     </td>
-    <td></td>
   </tr>
 </table>
 
